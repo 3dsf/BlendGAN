@@ -1,7 +1,7 @@
 import argparse
 import os
 
-import cv2
+import cv2, ffmpeg
 import numpy as np
 import torch
 
@@ -13,6 +13,21 @@ import glob
 from tqdm import tqdm
 import random
 
+#progress bar
+from IPython.display import HTML, display
+from tqdm import *
+
+### Progress bar
+def progress(value, max=100):
+    return HTML("""
+        <progress
+            value='{value}'
+            max='{max}',
+            style='width: 100%'
+        >
+            {value}
+        </progress>
+    """.format(value=value, max=max))
 
 seed = 0
 
@@ -139,6 +154,28 @@ def save_video(fname, images, output_fps=30):
 
     videoWriter.release()
 
+def writeFrameAsByte(ffmpegEncode, frame):
+    logger.debug('Writing frame')
+    ffmpegEncode.stdin.write(
+        frame
+        .astype(np.uint8)
+        .tobytes()
+    )
+
+def np2vid(out_filename, fps_out, widthOut, heightOut):
+    logger.info('np2vid() encoding from pipe')
+    codec = 'h264'
+    args = (
+        ffmpeg
+        .input('pipe:', format='rawvideo', pix_fmt='rgb24',
+            s='{}x{}'.format(widthOut, heightOut),
+            framerate=fps_out )
+        .output(out_filename , pix_fmt='yuv420p', **{'c:v': codec})
+        .global_args("-hide_banner")
+        .overwrite_output()
+        .compile()
+    )
+    return subprocess.Popen(args, stdin=subprocess.PIPE)
 
 if __name__ == '__main__':
     device = 'cuda'
@@ -171,7 +208,7 @@ if __name__ == '__main__':
     print('ckpt: ', args.ckpt)
 
     g_ema = Generator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier, load_pretrained_vgg=False
     ).to(device)
     g_ema.load_state_dict(model_dict)
     g_ema.eval()
@@ -181,6 +218,13 @@ if __name__ == '__main__':
 
     input_img_paths = sorted(glob.glob(os.path.join(args.input_img_path, '*.*')))
     style_img_paths = sorted(glob.glob(os.path.join(args.style_img_path, '*.*')))[:]
+    
+    fname = f'{args.outdir}/{name_in}.mp4'
+    fps = 30
+    outWidth = 3072
+    outHeight = 1024
+    output_name = out.mp4 #fname
+    ffmpegEncode = np2vid(output_name, fps, inputVid, outWidth, outHeight)
 
     for input_img_path in input_img_paths:
         print('process: %s' % input_img_path)
@@ -204,7 +248,11 @@ if __name__ == '__main__':
         fname = f'{args.outdir}/{name_in}.mp4'
         video = video_ref(args, g_ema, psp_encoder, img_in_ten, img_style_tens)
 
-        save_video(fname, video, output_fps=30)
+        #save_video(fname, video, output_fps=30)
+        writeFrameAsByte(ffmpegEncode, video)
+
+    ffmpegEncode.stdin.close()
+    ffmpegEncode.wait()
 
     print('Done!')
 
